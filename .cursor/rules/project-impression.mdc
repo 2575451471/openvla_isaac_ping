@@ -1,0 +1,14 @@
+---
+description: 先读本目录印象记忆，再动手改 shenle_projects
+alwaysApply: true
+---
+
+# 先读印象
+
+动手前阅读 `.cursor/PROJECT_IMPRESSION.md`。那是本目录的地图：Isaac Sim + ROS 2 + 本机 OpenVLA HTTP，不是上游训练仓库。
+
+- 进度细节以 `documents/README.md` 为准
+- OpenVLA 不进仿真；`/act` 返回末端 7 维增量，不是关节角
+- 闭环已跑通会动；下一步改过肩相机，再把闭环插值做顺。Reset/成功条件还没有
+- 桌上红圆柱能被 `ur12e_random_motion.py` 的肩转推动
+- 脚本写 UR12e，资产目录是 `assets/ur10e`；场景目录拼写是 `sence`
