@@ -5,7 +5,7 @@ Isaac Sim must already be playing, with the ROS 2 Camera graph publishing /rgb.
 
 Run:
     source /opt/ros/humble/setup.bash
-    python3 /home/dt/openvla/shenle_projects/scripts/save_rgb_30.py
+    python3 /home/dt/openvla/shenle_projects/scripts/ros/save_rgb_30.py
 """
 
 import time

@@ -8,7 +8,7 @@ Home values are from the Isaac joint panel (degrees). ROS commands are radians.
 
 Run:
     source /opt/ros/humble/setup.bash
-    python3 /home/dt/openvla/shenle_projects/scripts/ur12e_random_motion.py
+    python3 /home/dt/openvla/shenle_projects/scripts/legacy/ur12e_random_motion.py
 """
 
 import math

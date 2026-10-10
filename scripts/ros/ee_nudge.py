@@ -9,10 +9,10 @@ Isaac Sim must already be playing.
 
 Run:
     source /opt/ros/humble/setup.bash
-    python3 /home/dt/openvla/shenle_projects/scripts/ee_nudge.py
+    python3 /home/dt/openvla/shenle_projects/scripts/ros/ee_nudge.py
 
 Try another axis:
-    python3 scripts/ee_nudge.py --ros-args -p dx:=0.0 -p dy:=0.05
+    python3 scripts/ros/ee_nudge.py --ros-args -p dx:=0.0 -p dy:=0.05
 """
 
 import math
@@ -110,28 +110,53 @@ def _jacobian(q: np.ndarray, eps: float = 1e-6) -> np.ndarray:
 
 
 def ik(q_seed, T_goal, iters: int = 80) -> np.ndarray:
-    """Damped least-squares IK. Centimeter-scale steps should stay near q_seed."""
+    """Damped least-squares IK. Centimeter-scale steps should stay near q_seed.
+
+    UR default [0, -90, 0, 0, 0, 0] deg is near elbow singularity: full 6-D
+    solve often stalls. We try 6-D first, then a position-primary fallback so
+    small EE deltas still produce joint motion from that pose.
+    """
     q = np.array(q_seed, dtype=float)
     p_goal = T_goal[:3, 3]
     R_goal = T_goal[:3, :3]
-    for _ in range(iters):
-        T = fk(q)
-        dp = p_goal - T[:3, 3]
-        dw = _rot_log(T[:3, :3].T @ R_goal)
-        err = np.concatenate([dp, dw])
-        if np.linalg.norm(dp) < 5e-5 and np.linalg.norm(dw) < 1e-4:
-            return q
-        J = _jacobian(q)
-        damp = 1e-4
-        dq = J.T @ np.linalg.solve(J @ J.T + damp * np.eye(6), err)
-        dq = np.clip(dq, -0.2, 0.2)
-        q = q + dq
-    T = fk(q)
-    if np.linalg.norm(p_goal - T[:3, 3]) > 2e-3:
-        raise RuntimeError(
-            f'IK failed, pos err {np.linalg.norm(p_goal - T[:3, 3])*1000:.1f} mm'
-        )
-    return q
+
+    def _solve(q0: np.ndarray, w_rot: float, n_iters: int) -> np.ndarray:
+        q_local = np.array(q0, dtype=float)
+        for _ in range(n_iters):
+            T = fk(q_local)
+            dp = p_goal - T[:3, 3]
+            dw = _rot_log(T[:3, :3].T @ R_goal)
+            if np.linalg.norm(dp) < 5e-5 and (w_rot <= 0.0 or np.linalg.norm(dw) < 1e-4):
+                return q_local
+            J = _jacobian(q_local)
+            # Heavier damping near singularity (tiny singular values).
+            smin = float(np.linalg.svd(J, compute_uv=False)[-1])
+            damp = max(1e-4, 1e-2 * (1e-3 / max(smin, 1e-12)) ** 0.5)
+            damp = min(damp, 5e-2)
+            W = np.diag([1.0, 1.0, 1.0, w_rot, w_rot, w_rot])
+            Jw = W @ J
+            ew = W @ np.concatenate([dp, dw])
+            dq = Jw.T @ np.linalg.solve(Jw @ Jw.T + damp * np.eye(6), ew)
+            q_local = q_local + np.clip(dq, -0.2, 0.2)
+        return q_local
+
+    q = _solve(q, w_rot=1.0, n_iters=iters)
+    pos_err = float(np.linalg.norm(p_goal - fk(q)[:3, 3]))
+    if pos_err <= 2e-3:
+        return q
+
+    # Position-primary fallback (ignore most of orientation near singularity).
+    q = _solve(q_seed, w_rot=0.05, n_iters=iters)
+    pos_err = float(np.linalg.norm(p_goal - fk(q)[:3, 3]))
+    if pos_err <= 2e-3:
+        return q
+
+    q = _solve(q_seed, w_rot=0.0, n_iters=100)
+    pos_err = float(np.linalg.norm(p_goal - fk(q)[:3, 3]))
+    if pos_err <= 2e-3:
+        return q
+
+    raise RuntimeError(f'IK failed, pos err {pos_err * 1000:.1f} mm')
 
 
 def _cmd_qos():

@@ -6,15 +6,15 @@ capped at about 5 cm per step. Translation frame is selectable:
   delta_frame=base  add (dx,dy,dz) in the UR kinematic base (old behavior)
   delta_frame=ee    add R_ee @ (dx,dy,dz) in the current end-effector frame
 
-Starts by interpolating to a fixed home pose, then runs OpenVLA. Inference is
-~0.8 s (~1 Hz). Joint commands publish faster (default 50 Hz) and linearly
+Starts from the arm's current measured joint pose (no forced home). Inference
+is ~0.8 s (~1 Hz). Joint commands publish faster (default 50 Hz) and linearly
 interpolate from the previous command to each new IK goal so the arm does not
 jump when a step arrives.
 
 Run:
     source /opt/ros/humble/setup.bash
-    python3 /home/dt/openvla/shenle_projects/scripts/openvla_closed_loop.py
-    python3 .../openvla_closed_loop.py --ros-args -p delta_frame:=base -p max_steps:=20
+    python3 /home/dt/openvla/shenle_projects/scripts/ros/openvla_closed_loop.py
+    python3 .../ros/openvla_closed_loop.py --ros-args -p delta_frame:=base -p max_steps:=20
 """
 
 import json
@@ -82,17 +82,7 @@ def image_to_rgb(msg: Image) -> np.ndarray:
     return np.ascontiguousarray(pixels, dtype=np.uint8)
 
 
-HOME_DEG = {
-    'shoulder_pan_joint': 130.65,
-    'shoulder_lift_joint': -117.4,
-    'elbow_joint': -137.2,
-    'wrist_1_joint': -69.0,
-    'wrist_2_joint': 0.0,
-    'wrist_3_joint': 0.0,
-}
-HOME_RAD = np.array([np.deg2rad(HOME_DEG[name]) for name in ARM_JOINTS], dtype=float)
-
-LOG_DIR = Path(__file__).resolve().parent.parent / 'logs'
+LOG_DIR = Path(__file__).resolve().parents[2] / 'logs'
 LATEST_LOG = LOG_DIR / 'openvla_closed_loop.latest.log'
 
 
@@ -179,7 +169,7 @@ class ClosedLoop(Node):
             f'instr="{self.instruction}" clip {self.max_trans_m*100:.1f} cm, '
             f'delta_frame={self.delta_frame}, '
             f'publish {publish_rate:.0f} Hz, interp {self.interp_duration:.2f}s, '
-            f'home (deg)={HOME_DEG}, max {self.max_steps} steps  '
+            f'no forced home, max {self.max_steps} steps  '
             f'log={self._log_path}'
         )
         self._flog(
@@ -187,7 +177,7 @@ class ClosedLoop(Node):
             f'clip_trans_m={self.max_trans_m} clip_rot_rad={self.max_rot_rad} '
             f'delta_frame={self.delta_frame} '
             f'interp_s={self.interp_duration} max_steps={self.max_steps} '
-            f'home_deg={HOME_DEG}'
+            f'force_home=False'
         )
 
     def _open_run_log(self):
@@ -249,17 +239,19 @@ class ClosedLoop(Node):
                 self.arm_index = arm_index
                 self.q_pub = q.copy()
                 self.q_interp_start = q.copy()
-                self.q_interp_goal = HOME_RAD.copy()
-                self.interp_elapsed = 0.0
-                self._homed = False
+                self.q_interp_goal = q.copy()
+                self.interp_elapsed = self.interp_duration
+                self._homed = True
                 locked = True
             self.q_meas = q
         if locked:
             self.get_logger().info(
-                f'Locked joints {names}. Moving to home (deg)={HOME_DEG}'
+                f'Locked joints {names}. Keeping current pose '
+                f'(deg)={np.round(np.degrees(q), 2).tolist()}; starting OpenVLA.'
             )
             self._flog(
-                f'locked_joints names={names} q_meas_deg={np.round(np.degrees(q), 2).tolist()}'
+                f'locked_joints names={names} q_meas_deg={np.round(np.degrees(q), 2).tolist()} '
+                f'force_home=False start_openvla'
             )
 
     def _set_interp_goal(self, q_goal: np.ndarray):
@@ -363,16 +355,10 @@ class ClosedLoop(Node):
             alpha = self.interp_elapsed / self.interp_duration
             q = (1.0 - alpha) * self.q_interp_start + alpha * self.q_interp_goal
             self.q_pub = q
-            just_homed = False
-            if not self._homed and alpha >= 1.0:
-                self._homed = True
-                just_homed = True
             names = list(self.joint_names)
             arm_index = list(self.arm_index)
-        if just_homed:
-            self.get_logger().info('Home pose reached, starting OpenVLA.')
-            self._flog('home reached, starting OpenVLA')
         msg = JointState()
+
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = names
         positions = [0.0] * len(names)

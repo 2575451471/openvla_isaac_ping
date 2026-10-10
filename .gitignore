@@ -1,11 +1,33 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 .env
-*.log
-logs/
+
+# 编辑器 / 系统
 .DS_Store
 .vscode/
 .idea/
+
+# 运行日志
+*.log
+logs/
+
+# 采数（图 + npy，体积大）
+datasets/
+
+# 微调权重 / 临时 adapter（数 GB～十几 GB）
+runs/
+
+# 本地临时截图
+scripts/rgb_capture/
+
+# wandb（若写在本目录）
+wandb/
+
+# 杂项
+.cache/
+*.tmp
+*.swp

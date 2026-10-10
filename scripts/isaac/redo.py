@@ -130,6 +130,16 @@ HOLD_FRAMES = 0  # 中间航点不再停留
 
 END_HOLD_FRAMES = 80
 
+# ============================================================
+# Raw episode recording (bypass collector; no TensorFlow / ROS)
+# ============================================================
+ENABLE_RAW_RECORD = True
+RECORD_SAMPLE_HZ = 5.0
+RECORD_INSTRUCTION = "push the red cube to the right"
+RECORD_CUBE_PRIM = None  # None = auto (/World/RedCube or /World/red_cup)
+RECORD_OUT_ROOT = "/home/dt/openvla/shenle_projects/datasets/raw"
+
+
 ABORT_HOLD_FRAMES = 0  # 中间航点不再停留
 
 FK_CHECK_TOL_M = 0.02
@@ -1301,6 +1311,30 @@ async def run():
         raise RuntimeError("Please press Play before running this script.")
 
     times, coeff = build_continuous_spline(q_start, p_start_fk, trajectory)
+
+    recorder = None
+    if ENABLE_RAW_RECORD:
+        import sys
+        from pathlib import Path as _Path
+        # scripts/isaac/redo.py -> scripts/ (for dataset_raw package)
+        try:
+            _scripts = str(_Path(__file__).resolve().parents[1])
+        except NameError:
+            _scripts = "/home/dt/openvla/shenle_projects/scripts"
+        if _scripts not in sys.path:
+            sys.path.insert(0, _scripts)
+        from dataset_raw.episode_recorder import EpisodeRecorder
+        recorder = EpisodeRecorder(
+            instruction=RECORD_INSTRUCTION,
+            sample_hz=RECORD_SAMPLE_HZ,
+            out_root=RECORD_OUT_ROOT,
+            ee_prim=EE_PRIM,
+            base_prim=BASE_PRIM,
+            cube_prim=RECORD_CUBE_PRIM,
+            action_frame="ee",
+            rotation_representation="rpy_left_multiply",
+        )
+
     print("Continuous trajectory duration: {:.2f} s".format(times[-1]))
     q_actual = read_arm_q(robot, arm_idx)
     if np.max(np.abs(q_actual - q_start)) > JOINT_TRACK_TOL:
@@ -1331,8 +1365,15 @@ async def run():
             print("Tracking limit exceeded: joint={:.2f} deg, EE={:.2f} mm".format(
                 math.degrees(joint_error), 1000.0 * ee_error))
             await hold_current_pose(robot, arm_idx, app)
+            if recorder is not None:
+                try:
+                    recorder.finalize(success=False)
+                except Exception as rec_exc:
+                    print("[recorder] discard incomplete episode:", rec_exc)
             return
         send_arm_target(robot, arm_idx, q_target)
+        if recorder is not None:
+            recorder.maybe_sample(now, q_actual)
 
         # 航点只记录经过信息，不保持、不阻塞；这是参考经过而非实测到位。
         while reported_index < len(trajectory) and times[reported_index + 1] <= elapsed:
@@ -1343,6 +1384,10 @@ async def run():
         if elapsed >= times[-1]:
             break
         await app.next_update_async()
+
+    # Stop raw sampling before settle / END_HOLD (avoid near-zero actions).
+    if recorder is not None:
+        recorder.stop_sampling()
 
     # 仅在最终点收敛并保持；中间没有等待到位。
     q_final = trajectory[-1]["q"]
@@ -1367,12 +1412,19 @@ async def run():
         if now - settle_start > FINAL_SETTLE_TIMEOUT_S:
             await hold_current_pose(robot, arm_idx, app)
             raise RuntimeError("Final point did not settle within timeout.")
+
     for _ in range(END_HOLD_FRAMES):
         if not timeline.is_playing():
-            return
+            break
         send_arm_target(robot, arm_idx, q_final)
         await app.next_update_async()
     print("DONE: P7 reached; final pose held.")
+
+    if recorder is not None:
+        ep = recorder.finalize(success=True)
+        print("[recorder] raw episode ready:", ep)
+        print("Next: python3 scripts/dataset_raw/make_actions.py", ep)
+
 
 
 # ============================================================

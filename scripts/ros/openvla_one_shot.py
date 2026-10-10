@@ -9,7 +9,7 @@ deltas, not joint angles.
 
 Run:
     source /opt/ros/humble/setup.bash
-    python3 /home/dt/openvla/shenle_projects/scripts/openvla_one_shot.py
+    python3 /home/dt/openvla/shenle_projects/scripts/ros/openvla_one_shot.py
 """
 
 import json
