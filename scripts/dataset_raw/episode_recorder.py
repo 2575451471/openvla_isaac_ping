@@ -7,6 +7,7 @@ run make_actions.py offline after a successful episode.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,9 +18,13 @@ _SCRIPTS = Path(__file__).resolve().parents[1]
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from dataset_raw.pose_math import matrix_to_quat_wxyz  # noqa: E402
+from dataset_raw.pose_math import (  # noqa: E402
+    POSE_CONVENTION,
+    matrix_to_quat_wxyz,
+    usd_rotation_to_column,
+)
 
-DEFAULT_ROOT = Path("/home/dt/openvla/shenle_projects/datasets/raw")
+DEFAULT_ROOT = Path("/home/dt/openvla/shenle_projects/datasets/raw_pose_v2")
 DEFAULT_CAMERA = "/World/Realsense/RSD455/Camera_OmniVision_OV9782_Color"
 DEFAULT_EE = "/World/ur10e/wrist_3_link"
 DEFAULT_BASE = "/World/ur10e/base_link"
@@ -36,14 +41,7 @@ def get_world_pose7(prim_path: str) -> np.ndarray:
         raise RuntimeError("invalid prim: " + prim_path)
     T = omni.usd.get_world_transform_matrix(prim)
     p = T.ExtractTranslation()
-    R = np.array(
-        [
-            [T[0][0], T[0][1], T[0][2]],
-            [T[1][0], T[1][1], T[1][2]],
-            [T[2][0], T[2][1], T[2][2]],
-        ],
-        dtype=float,
-    )
+    R = usd_rotation_to_column(T)
     q = matrix_to_quat_wxyz(R)
     return np.array([p[0], p[1], p[2], q[0], q[1], q[2], q[3]], dtype=float)
 
@@ -90,6 +88,7 @@ class EpisodeRecorder:
         action_frame: str = "ee",
         rotation_representation: str = "rpy_left_multiply",
         gripper_open_value: float = 1.0,
+        episode_name: str | None = None,
     ):
         if sample_hz <= 0:
             raise ValueError("sample_hz must be positive")
@@ -106,7 +105,12 @@ class EpisodeRecorder:
         self.rotation_representation = rotation_representation
         self.gripper_open_value = float(gripper_open_value)
 
-        self.episode_dir = _next_episode_dir(Path(out_root))
+        if episode_name:
+            self.episode_dir = Path(out_root) / episode_name
+            if self.episode_dir.exists():
+                shutil.rmtree(self.episode_dir)
+        else:
+            self.episode_dir = _next_episode_dir(Path(out_root))
         self.images_dir = self.episode_dir / "images"
         self.images_dir.mkdir(parents=True)
 
@@ -209,6 +213,7 @@ class EpisodeRecorder:
             "action_units": ["m", "m", "m", "rad", "rad", "rad", "binary"],
             "gripper_open_value": self.gripper_open_value,
             "quaternion_order": "wxyz",
+            "pose_convention": POSE_CONVENTION,
             "image_resolution": [w, h] if w is not None else list(self.image_wh),
             "num_observations": n,
             "num_actions": n - 1,

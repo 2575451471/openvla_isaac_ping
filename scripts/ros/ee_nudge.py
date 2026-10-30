@@ -109,14 +109,26 @@ def _jacobian(q: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     return J
 
 
-def ik(q_seed, T_goal, iters: int = 80) -> np.ndarray:
+def ik(q_seed, T_goal, iters: int = 80, elbow_branch: int = 1,
+       position_limit: float = 2e-3, rotation_limit: float = None,
+       require_rotation: bool = True) -> np.ndarray:
     """Damped least-squares IK. Centimeter-scale steps should stay near q_seed.
 
     UR default [0, -90, 0, 0, 0, 0] deg is near elbow singularity: full 6-D
-    solve often stalls. We try 6-D first, then a position-primary fallback so
-    small EE deltas still produce joint motion from that pose.
+    solve often stalls. Try full-pose and position-weighted solves. The default
+    accepts 2 mm position and 1 degree rotation. require_rotation=False keeps
+    the position limit and does not reject a candidate for rotation error.
+    Adapt the rotation weight when the initial candidates trade off these errors.
+
+    This project's push demonstrations use the positive-elbow branch. Near
+    straight HOME, seed perturbations explicitly select it instead of allowing
+    sensor noise to choose elbow-up/down. Use elbow_branch=-1 for the other
+    branch, or 0 for unconstrained legacy behavior.
     """
-    q = np.array(q_seed, dtype=float)
+    if elbow_branch not in (-1, 0, 1):
+        raise ValueError('elbow_branch must be -1, 0, or 1')
+    seed = np.array(q_seed, dtype=float)
+    q = seed.copy()
     p_goal = T_goal[:3, 3]
     R_goal = T_goal[:3, :3]
 
@@ -140,23 +152,94 @@ def ik(q_seed, T_goal, iters: int = 80) -> np.ndarray:
             q_local = q_local + np.clip(dq, -0.2, 0.2)
         return q_local
 
-    q = _solve(q, w_rot=1.0, n_iters=iters)
-    pos_err = float(np.linalg.norm(p_goal - fk(q)[:3, 3]))
-    if pos_err <= 2e-3:
-        return q
+    def branch_ok(candidate):
+        return elbow_branch == 0 or elbow_branch * math.sin(float(candidate[2])) >= -1e-4
 
-    # Position-primary fallback (ignore most of orientation near singularity).
-    q = _solve(q_seed, w_rot=0.05, n_iters=iters)
-    pos_err = float(np.linalg.norm(p_goal - fk(q)[:3, 3]))
-    if pos_err <= 2e-3:
-        return q
+    seeds = [seed]
+    if elbow_branch:
+        elbow = math.atan2(math.sin(float(seed[2])), math.cos(float(seed[2])))
+        if elbow_branch * math.sin(elbow) < -0.2:
+            raise RuntimeError('Current elbow is on the opposite IK branch; reset to the recorded initial pose')
+        if abs(elbow) < 0.2:
+            # The straight HOME pose does not distinguish elbow-up/down.
+            # Bias only the IK seed, compensating adjacent joints to preserve
+            # total pitch. Future recorded joints are never consulted.
+            seeds = []
+            for bend in (0.10, 0.25):
+                preferred = seed.copy()
+                delta = elbow_branch * bend - elbow
+                preferred[1] -= delta / 2
+                preferred[2] += delta
+                preferred[3] -= delta / 2
+                seeds.append(preferred)
 
-    q = _solve(q_seed, w_rot=0.0, n_iters=100)
-    pos_err = float(np.linalg.norm(p_goal - fk(q)[:3, 3]))
-    if pos_err <= 2e-3:
-        return q
+    if rotation_limit is None:
+        rotation_limit = math.radians(1)
+    preferred_jump = math.radians(20)
+    valid_candidates = []
+    evaluated = []
 
-    raise RuntimeError(f'IK failed, pos err {pos_err * 1000:.1f} mm')
+    def evaluate(start, weight, count):
+        candidate = _solve(start, w_rot=weight, n_iters=count)
+        actual = fk(candidate)
+        position_error = float(np.linalg.norm(p_goal - actual[:3, 3]))
+        rotation_error = float(np.linalg.norm(_rot_log(actual[:3, :3].T @ R_goal)))
+        jump = float(np.max(np.abs(candidate - seed)))
+        preferred_branch = branch_ok(candidate)
+        item = (candidate, position_error, rotation_error, jump, preferred_branch)
+        evaluated.append(item)
+        rotation_ok = (not require_rotation) or rotation_error <= rotation_limit
+        if position_error <= position_limit and rotation_ok and preferred_branch:
+            valid_candidates.append(item)
+        return item
+
+    def usable(item):
+        _, position_error, rotation_error, jump, preferred_branch = item
+        rotation_ok = (not require_rotation) or rotation_error <= rotation_limit
+        return (position_error <= position_limit and rotation_ok
+                and jump <= preferred_jump and preferred_branch)
+
+    endpoints = {}
+    # Preserve the existing fast path, but do not return on position alone.
+    for weight in (1.0, 0.05):
+        for index, start in enumerate(seeds):
+            item = evaluate(start, weight, iters)
+            endpoints[index, weight] = item
+            if usable(item):
+                return item[0]
+
+    # Search between accurate-orientation/poor-position and the reverse.
+    # Use a geometric midpoint because the angular weight spans orders of magnitude.
+    # All returned candidates still satisfy the original pose limits.
+    for index, start in enumerate(seeds):
+        low, high = 0.05, 1.0
+        low_item, high_item = endpoints[index, low], endpoints[index, high]
+        if low_item[1] > position_limit or high_item[2] > rotation_limit:
+            continue
+        for _ in range(6):
+            weight = math.sqrt(low * high)
+            item = evaluate(start, weight, iters)
+            if usable(item):
+                return item[0]
+            if item[1] / position_limit > item[2] / rotation_limit:
+                high = weight
+            else:
+                low = weight
+
+    for start in seeds:
+        item = evaluate(start, 0.0, 100)
+        if usable(item):
+            return item[0]
+    if valid_candidates:
+        # Non-controller callers may intentionally request a larger joint move.
+        # The production controller separately enforces its unchanged 20-degree limit.
+        return min(valid_candidates, key=lambda item: item[3])[0]
+    best = min(evaluated, key=lambda item: max(item[1] / position_limit, item[2] / rotation_limit))
+    raise RuntimeError(
+        f'IK failed on preferred elbow branch {elbow_branch}: '
+        f'position={best[1] * 1000:.3f}mm rotation={math.degrees(best[2]):.3f}deg '
+        f'joint_step={math.degrees(best[3]):.3f}deg'
+    )
 
 
 def _cmd_qos():

@@ -13,3 +13,4 @@ alwaysApply: true
 - 桌上红圆柱能被 `scripts/legacy/ur12e_random_motion.py` 的肩转推动
 - 脚本分包：`scripts/isaac/`（redo）、`scripts/ros/`（闭环）、`dataset_raw/`、`rlds_*`；早期试探在 `legacy/`
 - 脚本写 UR12e，资产目录是 `assets/ur10e`；场景目录拼写是 `sence`
+- 自己操作 Isaac 时用 streaming（`scripts/isaac/start_pose_v2_webrtc.sh`），不要在本机桌面开窗口

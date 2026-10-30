@@ -6,6 +6,20 @@ import math
 
 import numpy as np
 
+POSE_CONVENTION = "world_from_local_column_v2"
+
+
+def usd_rotation_to_column(T) -> np.ndarray:
+    """Convert USD's row-vector rotation to our active column-vector rotation."""
+    return np.array([[T[i][j] for j in range(3)] for i in range(3)], dtype=float).T
+
+
+def conjugate_quaternion(q: np.ndarray) -> np.ndarray:
+    """Invert a unit wxyz rotation, including legacy row-matrix quaternions."""
+    result = normalize_quat_wxyz(q).copy()
+    result[1:] *= -1.0
+    return result
+
 # Same as redo.py: Isaac base <-> custom UR FK differs by Rz(180).
 R_ISAAC_TO_FK = np.array(
     [

@@ -31,3 +31,6 @@ wandb/
 .cache/
 *.tmp
 *.swp
+
+# Isaac / 场景资产（体积大，留在本机）
+assets/

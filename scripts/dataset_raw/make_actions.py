@@ -2,8 +2,11 @@
 """Offline: ee_poses_world.npy -> actions.npy matching openvla_closed_loop.
 
 Usage (no Isaac / TensorFlow needed):
-  python3 scripts/dataset_raw/make_actions.py datasets/raw/episode_000001
-  python3 scripts/dataset_raw/make_actions.py datasets/raw --all
+  python3 scripts/dataset_raw/make_actions.py datasets/raw_pose_v2/episode_000002
+  python3 scripts/dataset_raw/make_actions.py datasets/raw_pose_v2 --all --success-only
+
+--all walks every episode_* directory. A directory without meta.json is skipped.
+--success-only keeps only meta.success true, which is the set TFDS will train on.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from dataset_raw.pose_math import (  # noqa: E402
+    POSE_CONVENTION,
     delta_action_closed_loop,
     pose7_world_to_fk,
 )
@@ -31,6 +35,18 @@ def _load_meta(ep: Path) -> dict:
         return json.load(f)
 
 
+def skip_reason(ep: Path, success_only: bool) -> str | None:
+    """Incomplete folders are left from an aborted recording and cannot be labeled."""
+    meta_path = ep / "meta.json"
+    if not meta_path.is_file():
+        return "no meta.json"
+    if not (ep / "ee_poses_world.npy").is_file():
+        return "no ee_poses_world.npy"
+    if success_only and _load_meta(ep).get("success") is not True:
+        return "success is not true"
+    return None
+
+
 def make_actions_for_episode(ep: Path, overwrite: bool = False) -> Path:
     ep = Path(ep)
     out = ep / "actions.npy"
@@ -38,6 +54,11 @@ def make_actions_for_episode(ep: Path, overwrite: bool = False) -> Path:
         raise FileExistsError(f"{out} exists; pass --overwrite")
 
     meta = _load_meta(ep)
+    if meta.get("pose_convention") != POSE_CONVENTION:
+        raise ValueError(
+            f"{ep}: legacy or unknown pose convention. Do not overwrite old labels; "
+            "use repair_pose_dataset.py to create a validated dataset copy first."
+        )
     poses = np.load(ep / "ee_poses_world.npy")
     if poses.ndim != 2 or poses.shape[1] != 7:
         raise ValueError(f"ee_poses_world.npy expected (N,7), got {poses.shape}")
@@ -72,6 +93,7 @@ def make_actions_for_episode(ep: Path, overwrite: bool = False) -> Path:
     meta["num_actions"] = int(actions.shape[0])
     meta["actions_file"] = "actions.npy"
     meta["actions_generated"] = True
+    meta["actions_pose_convention"] = POSE_CONVENTION
     with open(ep / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
@@ -92,16 +114,29 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("path", type=Path, help="episode dir or raw root with --all")
     ap.add_argument("--all", action="store_true", help="process all episode_* under path")
+    ap.add_argument(
+        "--success-only",
+        action="store_true",
+        help="with --all, label only episodes whose meta.success is true",
+    )
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
 
     if args.all:
-        eps = sorted(args.path.glob("episode_*"))
+        eps = sorted(p for p in args.path.glob("episode_*") if p.is_dir())
         if not eps:
             raise SystemExit(f"no episode_* under {args.path}")
+        labeled = 0
         for ep in eps:
-            if ep.is_dir():
-                make_actions_for_episode(ep, overwrite=args.overwrite)
+            reason = skip_reason(ep, args.success_only)
+            if reason:
+                print(f"skip {ep.name}: {reason}")
+                continue
+            make_actions_for_episode(ep, overwrite=args.overwrite)
+            labeled += 1
+        print(f"labeled {labeled}, skipped {len(eps) - labeled}")
+        if labeled == 0:
+            raise SystemExit("no episodes labeled")
     else:
         make_actions_for_episode(args.path, overwrite=args.overwrite)
 

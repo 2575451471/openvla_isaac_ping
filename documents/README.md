@@ -1,11 +1,25 @@
 # write by shenle
+> 2026-10-27：当前采数/训练见 `documents/home_v3_recollect.md`（非奇异 HOME，覆盖 raw_pose_v2 与 TFDS 2.0.0，4bit 重训）。
+> 2026-10-16：已确认旧采数的姿态约定错误。修复与当时执行步骤见 `documents/pose_repair_v2.md`。
+> 下方旧数据、训练及权重路径为历史流程；不要直接重跑旧训练流水线。
+
 关于微调 LoRA（权威流程）
 
 ## 收集数据
-先收集 episode（目前是手动设计的一条成功轨迹）。
 
-Isaac 打开 `assets/sence/sence1.usd`（目录名是 `sence`）→ Script Editor 打开 `scripts/isaac/redo.py` → Play 后跑脚本。  
+成功定义：**把红色方块从桌子右边（世界 −X）推下/推出**。掉下桌可以；从其它边掉下算失败。
+
+运动/IK 共用库：`scripts/isaac/arm_motion.py`（`redo.py` / `collect_push_batch.py` 都调用它）。
+
+### 单次手调（模板路径）
+Isaac 打开 `assets/sence/sence1.usd`（目录名是 `sence`）→ Play → Script Editor 跑 `scripts/isaac/redo.py`。  
 `ENABLE_RAW_RECORD = True` 时写到 `datasets/raw/episode_000xxx/`。
+
+### 批量采数（推荐）
+同一场景 Play 后跑 `scripts/isaac/collect_push_batch.py`：
+- 每轮 reset 方块 + 臂回 home，按方块位姿生成接近/沿 −X 推程航点
+- 成功门控：过桌子右缘且 |y| 仍在桌宽内（可掉下桌）
+- 旋钮：`TARGET_SUCCESSES` / `MAX_ATTEMPTS` / `CUBE_XY_NOISE` / `PUSH_DISTANCE_RANGE` / `TABLE_X_RIGHT`
 
 打动作标签：
 
@@ -13,10 +27,10 @@ Isaac 打开 `assets/sence/sence1.usd`（目录名是 `sence`）→ Script Edito
 cd /home/dt/openvla/shenle_projects
 python3 scripts/dataset_raw/make_actions.py datasets/raw/episode_000xxx
 # 多个 episode：
-# python3 scripts/dataset_raw/make_actions.py datasets/raw --all
+python3 scripts/dataset_raw/make_actions.py datasets/raw --all
 ```
 
-得到 `actions.npy`。
+得到 `actions.npy`。TFDS 会跳过 `meta.success=false` 的 episode。
 
 ## 转成 OpenVLA 的 RLDS
 ```bash
